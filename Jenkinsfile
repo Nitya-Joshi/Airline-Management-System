@@ -1,59 +1,72 @@
 pipeline {
     agent {
         docker {
-            image 'maven:3.8.7-openjdk-17' // ✅ Java + Maven
+            image 'maven:3.8.5-openjdk-17'
+            args '-u root'
         }
     }
 
     environment {
-        // Replace with your real values or Jenkins credentials
-        EC2_HOST = "ec2-user@<EC2_PUBLIC_IP>"
-        JAR_NAME = "target/yourapp.jar" // adjust based on your project
-        SSH_CREDENTIALS_ID = 'ec2-ssh-key'
+        EC2_IP = '44.201.90.0'                              // Your EC2 Public IP
+        JAR_NAME = 'flightBooking-0.0.1-SNAPSHOT.jar'       // Your Spring Boot JAR name
+        REMOTE_PATH = "/home/ec2-user/flightBooking-0.0.1-SNAPSHOT.jar"
     }
 
     stages {
-
-        stage('Checkout Spring Boot Project') {
+        // Stage 1: Clone GitHub project
+        stage('Checkout') {
             steps {
-                git 'https://github.com/yourusername/springboot-project.git'
+                git branch: 'main', url: 'https://github.com/Nitya-Joshi/Airline-Management-System.git'
             }
         }
 
-        stage('Build the Project') {
+        // Stage 2: Build the JAR
+        stage('Build') {
             steps {
-                sh 'mvn clean package -DskipTests=false'
+                sh 'mvn clean package -DskipTests'
             }
         }
 
-        stage('Run Test Cases') {
+        // Stage 3: Test phase
+        stage('Test') {
             steps {
                 sh 'mvn test'
             }
         }
 
-        stage('Deploy JAR to EC2') {
+        // Stage 4: Deploy to EC2
+        stage('Deploy to EC2') {
             steps {
-                sshagent (credentials: ["${SSH_CREDENTIALS_ID}"]) {
-                    // Copy the jar file
-                    sh "scp -o StrictHostKeyChecking=no ${JAR_NAME} ${EC2_HOST}:/home/ec2-user/"
+                withCredentials([file(credentialsId: 'ec2-pem-key', variable: 'PEM_PATH')]) {
+                    sh '''#!/bin/bash
+                        chmod 400 "$PEM_PATH"
+                        scp -o StrictHostKeyChecking=no -i "$PEM_PATH" "target/${JAR_NAME}" ec2-user@${EC2_IP}:${REMOTE_PATH}
+                    '''
                 }
             }
         }
 
-        stage('Start JAR on EC2') {
+        // Stage 5: Start app on EC2
+        stage('Start on EC2') {
             steps {
-                sshagent (credentials: ["${SSH_CREDENTIALS_ID}"]) {
-                    sh """
-                    ssh -o StrictHostKeyChecking=no ${EC2_HOST} '
-                        # kill existing process if running
-                        pkill -f "java -jar" || true
-                        # start new process
-                        nohup java -jar /home/ec2-user/${JAR_NAME.split('/')[-1]} > app.log 2>&1 &
-                    '
-                    """
+                withCredentials([file(credentialsId: 'ec2-pem-key', variable: 'PEM_PATH')]) {
+                    sh '''#!/bin/bash
+                        ssh -o StrictHostKeyChecking=no -i "$PEM_PATH" ec2-user@${EC2_IP} '
+                            nohup /usr/bin/java -jar ${REMOTE_PATH} > app.log 2>&1 &
+                        '
+                    '''
                 }
             }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Application deployed successfully!'
+            echo "URL: http://${EC2_IP}:8080"
+        }
+        failure {
+            echo '❌ Deployment failed. Please check the logs.'
         }
     }
 }
